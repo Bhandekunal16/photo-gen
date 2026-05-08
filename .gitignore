@@ -1,2 +1,5 @@
 checkpoints/
 gen_images/
+.venv/
+__pycache__/
+*.pyc

@@ -1,0 +1,4 @@
+# Runtime deps for text_to_image.py
+# Pinned ranges target Python 3.13. TF 2.19 was the first release with full Py3.13 support.
+numpy>=1.26
+tensorflow>=2.19
