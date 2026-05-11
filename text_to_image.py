@@ -20,8 +20,15 @@ EPOCHS = 2000
 MAX_LEN = 20
 VOCAB_SIZE = 5000
 EMBED_DIM = 256
-# Discriminator training steps per generator step (canonical WGAN-GP uses 5).
-N_CRITIC = 2
+# Discriminator-side text projection width. Was implicitly 8192 (the flattened
+# conv-feature width), which caused a ~134M-parameter explosion in the
+# discriminator's ConditioningAugmentation block. 256 keeps disc balanced with
+# the generator (~7M vs ~8M params).
+DISC_TEXT_DIM = 256
+# Discriminator training steps per generator step. 1 keeps the game balanced
+# given the asymmetric optimizer LRs (3e-4 gen vs 1e-4 disc) and the freshly
+# rebalanced model sizes.
+N_CRITIC = 1
 # EMA decay for the generator copy used for sample saving. 0.999 is standard.
 EMA_DECAY = 0.999
 # Number of fixed-noise samples saved each visualization step (rendered as a square grid).
@@ -179,8 +186,8 @@ def make_discriminator():
 
     x = layers.Flatten()(x)
 
-    text_proj = layers.Dense(x.shape[-1], activation="relu")(text_input)
-    ca_text = ConditioningAugmentation(x.shape[-1])(text_proj)
+    text_proj = layers.Dense(DISC_TEXT_DIM, activation="relu")(text_input)
+    ca_text = ConditioningAugmentation(DISC_TEXT_DIM)(text_proj)
 
     x = layers.Concatenate()([x, ca_text])
     x = layers.Dense(512, activation="relu")(x)
