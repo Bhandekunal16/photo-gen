@@ -314,13 +314,12 @@ def main():
     g_ema = build_ema_generator(generator)
 
     # 3. Optimizers
-    # TTUR: generator runs faster (3e-4) than the discriminator (5e-5).
-    # The disc was previously at 1e-4 which still let it dominate even after
-    # parameter rebalancing -- disc loss decayed below 0.08 by epoch ~90 with
-    # gen loss climbing past 2.5, eventually starting partial mode collapse.
-    # Halving disc LR keeps the game balanced.
+    # TTUR: generator runs faster (3e-4) than the discriminator (2.5e-5).
+    # Started at disc LR=1e-4 (disc dominated), halved to 5e-5 (better but disc
+    # still slowly saturated past epoch ~100 with loss creeping toward 0.06),
+    # halved again to 2.5e-5 to lock the game closer to true equilibrium.
     gen_opt = tf.keras.optimizers.Adam(3e-4, beta_1=0.5, beta_2=0.999)
-    disc_opt = tf.keras.optimizers.Adam(5e-5, beta_1=0.5, beta_2=0.9)
+    disc_opt = tf.keras.optimizers.Adam(2.5e-5, beta_1=0.5, beta_2=0.9)
 
     # 4. Checkpoints. expect_partial() is used on restore so that older
     # checkpoints (without g_ema) still load cleanly; the EMA copy will simply
@@ -339,6 +338,16 @@ def main():
     if latest_ckpt:
         checkpoint.restore(latest_ckpt).expect_partial()
         print(f"Restored from checkpoint: {latest_ckpt}")
+        # The checkpoint also stores the optimizer's learning_rate variable,
+        # which overrides the value we just constructed Adam with. Force the
+        # new LR back in so the resume actually uses 2.5e-5 instead of the
+        # stale 5e-5 that the checkpoint will have restored.
+        gen_opt.learning_rate.assign(3e-4)
+        disc_opt.learning_rate.assign(2.5e-5)
+        print(
+            f"Forced LR override: gen={float(gen_opt.learning_rate):.1e}, "
+            f"disc={float(disc_opt.learning_rate):.1e}"
+        )
     else:
         print("Starting training from scratch.")
 
