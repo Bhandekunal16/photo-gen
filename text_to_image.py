@@ -1,4 +1,10 @@
 import os
+# Silence TF info logs (oneDNN, CPU feature notice, etc.) before importing tf.
+os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "3")
+os.environ.setdefault("TF_ENABLE_ONEDNN_OPTS", "0")
+
+import sys
+import time
 import numpy as np
 import tensorflow as tf
 from tensorflow.keras import layers
@@ -14,7 +20,14 @@ EPOCHS = 2000
 MAX_LEN = 20
 VOCAB_SIZE = 5000
 EMBED_DIM = 256
+# Discriminator training steps per generator step (canonical WGAN-GP uses 5).
 N_CRITIC = 2
+# EMA decay for the generator copy used for sample saving. 0.999 is standard.
+EMA_DECAY = 0.999
+# Number of fixed-noise samples saved each visualization step (rendered as a square grid).
+MONITOR_GRID = 4
+# How often to update the in-line progress line within an epoch.
+LOG_EVERY_STEPS = 20
 
 # Performance toggles. Mixed precision can ~2x throughput on modern GPUs
 # but WGAN-GP is sensitive, so it's opt-in.
@@ -204,50 +217,78 @@ def gradient_penalty(discriminator, real_images, fake_images, text_embeddings):
 
 
 @tf.function(reduce_retracing=True)
-def train_step(images, captions, generator, discriminator, gen_opt, disc_opt):
+def disc_step(images, captions, generator, discriminator, disc_opt):
+    """One discriminator update. Generator is run in inference mode for fakes."""
     batch_size = tf.shape(images)[0]
     noise = tf.random.normal([batch_size, NOISE_DIM])
+    fake_images = generator([noise, captions], training=True)
 
-    with tf.GradientTape() as gen_tape, tf.GradientTape() as disc_tape:
-        fake_images = generator([noise, captions], training=True)
-
+    with tf.GradientTape() as tape:
         real_output = discriminator([images, captions], training=True)
         fake_output = discriminator([fake_images, captions], training=True)
-
         gp = gradient_penalty(discriminator, images, fake_images, captions)
+        d_loss = discriminator_loss(real_output, fake_output) + gp
 
-        gen_loss = generator_loss(fake_output)
-        disc_loss = discriminator_loss(real_output, fake_output) + gp
+    grads = tape.gradient(d_loss, discriminator.trainable_variables)
+    disc_opt.apply_gradients(zip(grads, discriminator.trainable_variables))
+    return d_loss
 
-    gradients_of_generator = gen_tape.gradient(gen_loss, generator.trainable_variables)
-    gradients_of_discriminator = disc_tape.gradient(
-        disc_loss, discriminator.trainable_variables
-    )
 
-    gen_opt.apply_gradients(zip(gradients_of_generator, generator.trainable_variables))
-    disc_opt.apply_gradients(zip(gradients_of_discriminator, discriminator.trainable_variables))
+@tf.function(reduce_retracing=True)
+def gen_step(captions, generator, discriminator, gen_opt):
+    """One generator update."""
+    batch_size = tf.shape(captions)[0]
+    noise = tf.random.normal([batch_size, NOISE_DIM])
 
-    return gen_loss, disc_loss
+    with tf.GradientTape() as tape:
+        fake_images = generator([noise, captions], training=True)
+        fake_output = discriminator([fake_images, captions], training=True)
+        g_loss = generator_loss(fake_output)
 
-def save_generated_image(epoch, folder_type, generator):
-    test_caption = "a body of water"
-    seq = tokenizer.texts_to_sequences([test_caption])[0]
-    padded = pad_sequences([seq], maxlen=MAX_LEN)
-    padded_tensor = tf.constant(padded, dtype=tf.int32)
+    grads = tape.gradient(g_loss, generator.trainable_variables)
+    gen_opt.apply_gradients(zip(grads, generator.trainable_variables))
+    return g_loss
 
-    noise = tf.random.normal([1, NOISE_DIM])
-    embedding = embedding_layer(padded_tensor)
-    embedding_mean = tf.reduce_mean(embedding, axis=1)
 
-    generated = generator([noise, embedding_mean], training=False)
-    img = (generated[0] + 1.0) / 2.0
-    img_uint8 = tf.cast(tf.clip_by_value(img * 255.0, 0.0, 255.0), tf.uint8)
+def build_ema_generator(generator):
+    """Create a non-trainable shadow generator initialized from `generator`."""
+    ema = make_generator()
+    ema.set_weights(generator.get_weights())
+    ema.trainable = False
+    return ema
+
+
+@tf.function
+def update_ema(model, ema_model, decay):
+    """In-place EMA update over ALL weights (incl. BatchNorm running stats)."""
+    for v_ema, v in zip(ema_model.weights, model.weights):
+        v_ema.assign(decay * v_ema + (1.0 - decay) * v)
+
+def save_generated_samples(epoch, folder_type, generator, monitor_noise, monitor_text):
+    """Save a square grid of fixed-noise samples so progress is visually comparable
+    across epochs. Uses the EMA generator passed in for higher-quality samples.
+    """
+    images = generator([monitor_noise, monitor_text], training=False)
+    images = tf.clip_by_value((images + 1.0) / 2.0, 0.0, 1.0)
+
+    n = int(images.shape[0])
+    grid = int(np.ceil(np.sqrt(n)))
+    pad = grid * grid - n
+    if pad > 0:
+        images = tf.concat(
+            [images, tf.zeros([pad, IMG_SIZE, IMG_SIZE, CHANNELS], dtype=images.dtype)],
+            axis=0,
+        )
+    # Tile [G*G, H, W, C] -> [G*H, G*W, C]
+    tiled = tf.reshape(images, [grid, grid, IMG_SIZE, IMG_SIZE, CHANNELS])
+    tiled = tf.transpose(tiled, [0, 2, 1, 3, 4])
+    tiled = tf.reshape(tiled, [grid * IMG_SIZE, grid * IMG_SIZE, CHANNELS])
+    tiled_u8 = tf.cast(tiled * 255.0, tf.uint8)
 
     out_dir = f"gen_images/{folder_type}"
     os.makedirs(out_dir, exist_ok=True)
     out_path = os.path.join(out_dir, f"generated_image_epoch_{epoch + 1}.png")
-    # tf.io.encode_png is dramatically faster than matplotlib + savefig.
-    tf.io.write_file(out_path, tf.io.encode_png(img_uint8))
+    tf.io.write_file(out_path, tf.io.encode_png(tiled_u8))
 
 # --- Main Training Loop ---
 def main():
@@ -256,58 +297,95 @@ def main():
     # 1. Prepare Data
     with open("./data/captions_60px.txt") as f:
         all_captions = [line.strip().split("|")[1] for line in f]
-    
+
     tokenizer.fit_on_texts(all_captions)
     payload = load_image_caption_dataset("./data/image60px", "./data/captions_60px.txt")
 
-    # 2. Build Models
+    # 2. Build Models (generator + discriminator + EMA shadow generator).
     discriminator = make_discriminator()
     generator = make_generator()
+    g_ema = build_ema_generator(generator)
 
     # 3. Optimizers
     gen_opt = tf.keras.optimizers.Adam(3e-4, beta_1=0.5, beta_2=0.999)
     disc_opt = tf.keras.optimizers.Adam(1e-4, beta_1=0.5, beta_2=0.9)
 
-    # 4. Checkpoints
+    # 4. Checkpoints. expect_partial() is used on restore so that older
+    # checkpoints (without g_ema) still load cleanly; the EMA copy will simply
+    # be initialized from the live generator weights for that run.
     checkpoint_dir = "./checkpoints"
     checkpoint_prefix = os.path.join(checkpoint_dir, "ckpt_60px")
     checkpoint = tf.train.Checkpoint(
         generator=generator,
         discriminator=discriminator,
+        g_ema=g_ema,
         g_optimizer=gen_opt,
         d_optimizer=disc_opt,
     )
 
     latest_ckpt = tf.train.latest_checkpoint(checkpoint_dir)
     if latest_ckpt:
-        checkpoint.restore(latest_ckpt)
+        checkpoint.restore(latest_ckpt).expect_partial()
         print(f"Restored from checkpoint: {latest_ckpt}")
     else:
         print("Starting training from scratch.")
 
-    # 5. Training Loop
+    # 5. Fixed monitoring inputs so visual progress across epochs is comparable.
+    monitor_noise = tf.random.normal([MONITOR_GRID, NOISE_DIM])
+    seq = tokenizer.texts_to_sequences(["a body of water"] * MONITOR_GRID)
+    padded = pad_sequences(seq, maxlen=MAX_LEN).astype(np.int32)
+    # NOTE: the original code conditions monitoring on mean(embedding) while
+    # training conditions on LSTM features. That mismatch is preserved here
+    # to stay compatible with this checkpoint family.
+    monitor_text = tf.reduce_mean(embedding_layer(tf.constant(padded)), axis=1)
+
+    # 6. Training Loop with N_CRITIC, EMA, and per-epoch averaged losses.
+    g_loss_metric = tf.keras.metrics.Mean()
+    d_loss_metric = tf.keras.metrics.Mean()
+
     for epoch in range(EPOCHS):
-        for image_batch, caption_batch in payload:
-            g_loss, d_loss = train_step(
-                image_batch, caption_batch, generator, discriminator, gen_opt, disc_opt
-            )
+        g_loss_metric.reset_state()
+        d_loss_metric.reset_state()
+        epoch_start = time.time()
 
-        # .numpy() once per epoch to avoid syncing the device on every step.
-        g_loss_v = float(g_loss.numpy())
-        d_loss_v = float(d_loss.numpy())
-        print(f"Epoch {epoch+1}, Gen Loss: {g_loss_v:.4f}, Disc Loss: {d_loss_v:.4f}")
+        for step_idx, (image_batch, caption_batch) in enumerate(payload):
+            d_loss = disc_step(image_batch, caption_batch, generator, discriminator, disc_opt)
+            d_loss_metric.update_state(d_loss)
 
-        if g_loss_v <= 0.8 and d_loss_v <= 0.8:
-            save_generated_image(epoch, 'perfect', generator)
+            if step_idx % N_CRITIC == 0:
+                g_loss = gen_step(caption_batch, generator, discriminator, gen_opt)
+                g_loss_metric.update_state(g_loss)
+                update_ema(generator, g_ema, EMA_DECAY)
+
+            if (step_idx + 1) % LOG_EVERY_STEPS == 0:
+                sys.stdout.write(
+                    f"\rEpoch {epoch+1:>4}  step {step_idx+1:>5}  "
+                    f"g={float(g_loss_metric.result()):.4f}  "
+                    f"d={float(d_loss_metric.result()):.4f}"
+                )
+                sys.stdout.flush()
+
+        elapsed = time.time() - epoch_start
+        g_avg = float(g_loss_metric.result())
+        d_avg = float(d_loss_metric.result())
+        # Clear the in-line progress line, then print the epoch summary.
+        sys.stdout.write("\r" + " " * 80 + "\r")
+        print(
+            f"Epoch {epoch+1}/{EPOCHS}  Gen {g_avg:.4f}  Disc {d_avg:.4f}  ({elapsed:.1f}s)"
+        )
+
+        if g_avg <= 0.8 and d_avg <= 0.8:
+            save_generated_samples(epoch, "perfect", g_ema, monitor_noise, monitor_text)
 
         if (epoch + 1) % 10 == 0 or epoch == EPOCHS - 1:
-            save_generated_image(epoch, 'normal', generator)
+            save_generated_samples(epoch, "normal", g_ema, monitor_noise, monitor_text)
 
         if (epoch + 1) % 10 == 0:
             checkpoint.save(file_prefix=checkpoint_prefix)
 
-    # 6. Final Save
+    # 7. Final Save (live generator + EMA copy + discriminator).
     generator.save("generator_model_60px.keras")
+    g_ema.save("generator_ema_model_60px.keras")
     discriminator.save("discriminator_model_60px.keras")
 
 if __name__ == "__main__":
