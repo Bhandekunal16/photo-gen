@@ -314,8 +314,13 @@ def main():
     g_ema = build_ema_generator(generator)
 
     # 3. Optimizers
+    # TTUR: generator runs faster (3e-4) than the discriminator (5e-5).
+    # The disc was previously at 1e-4 which still let it dominate even after
+    # parameter rebalancing -- disc loss decayed below 0.08 by epoch ~90 with
+    # gen loss climbing past 2.5, eventually starting partial mode collapse.
+    # Halving disc LR keeps the game balanced.
     gen_opt = tf.keras.optimizers.Adam(3e-4, beta_1=0.5, beta_2=0.999)
-    disc_opt = tf.keras.optimizers.Adam(1e-4, beta_1=0.5, beta_2=0.9)
+    disc_opt = tf.keras.optimizers.Adam(5e-5, beta_1=0.5, beta_2=0.9)
 
     # 4. Checkpoints. expect_partial() is used on restore so that older
     # checkpoints (without g_ema) still load cleanly; the EMA copy will simply
