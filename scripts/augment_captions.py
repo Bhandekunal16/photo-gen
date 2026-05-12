@@ -129,11 +129,14 @@ def caption_image(
         repetition_penalty=1.1,
     )
     captions = processor.batch_decode(outputs, skip_special_tokens=True)
-    # De-duplicate while preserving order in case sampling collapses.
+    # De-duplicate while preserving order in case sampling collapses, and
+    # strip any '|' or newline characters since the on-disk format is
+    # 'image_name|caption' and a stray '|' would corrupt the loader.
     seen: set[str] = set()
     unique: list[str] = []
     for c in captions:
-        c = c.strip()
+        c = c.replace("|", " ").replace("\n", " ").replace("\r", " ").strip()
+        c = " ".join(c.split())  # collapse runs of whitespace
         if c and c not in seen:
             seen.add(c)
             unique.append(c)

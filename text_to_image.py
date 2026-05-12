@@ -131,7 +131,14 @@ def load_image_caption_dataset(img_folder, caption_file):
 
     with open(caption_file, "r") as f:
         for line in f:
-            img_name, caption = line.strip().split("|")
+            line = line.strip()
+            if not line or "|" not in line:
+                continue
+            # Use maxsplit=1 so captions containing a stray '|' (e.g. generated
+            # by BLIP for noisy/text-heavy images) still parse cleanly. The
+            # augmenter sanitizes its output, but defending here too keeps the
+            # loader robust against any future caption source.
+            img_name, caption = line.split("|", 1)
             image_paths.append(os.path.join(img_folder, img_name))
             captions.append(caption)
 
@@ -353,7 +360,11 @@ def main():
     captions_path = _resolve_captions_path()
     print(f"Using captions file: {captions_path}")
     with open(captions_path) as f:
-        all_captions = [line.strip().split("|")[1] for line in f]
+        all_captions = [
+            line.strip().split("|", 1)[1]
+            for line in f
+            if line.strip() and "|" in line
+        ]
 
     tokenizer.fit_on_texts(all_captions)
     payload = load_image_caption_dataset("./data/image60px", captions_path)
