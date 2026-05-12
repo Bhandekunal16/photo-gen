@@ -332,15 +332,31 @@ def save_generated_samples(epoch, folder_type, generator, monitor_noise, monitor
     tf.io.write_file(out_path, tf.io.encode_png(tiled_u8))
 
 # --- Main Training Loop ---
+def _resolve_captions_path() -> str:
+    """Prefer the BLIP-augmented captions file when it exists.
+
+    `data/captions_60px_v2.txt` is produced by `scripts/augment_captions.py`
+    and contains the original human caption plus 2 BLIP-generated alternates
+    per image, so the dataset triples (3000 image-caption training pairs
+    against the same 1000 images). Falling back to v1 keeps the script
+    runnable on a fresh clone before augmentation has been done.
+    """
+    v2 = "./data/captions_60px_v2.txt"
+    v1 = "./data/captions_60px.txt"
+    return v2 if os.path.exists(v2) else v1
+
+
 def main():
     configure_runtime()
 
     # 1. Prepare Data
-    with open("./data/captions_60px.txt") as f:
+    captions_path = _resolve_captions_path()
+    print(f"Using captions file: {captions_path}")
+    with open(captions_path) as f:
         all_captions = [line.strip().split("|")[1] for line in f]
 
     tokenizer.fit_on_texts(all_captions)
-    payload = load_image_caption_dataset("./data/image60px", "./data/captions_60px.txt")
+    payload = load_image_caption_dataset("./data/image60px", captions_path)
 
     # 2. Build Models (generator + discriminator + EMA shadow generator).
     discriminator = make_discriminator()

@@ -2,3 +2,13 @@
 # Pinned ranges target Python 3.13. TF 2.19 was the first release with full Py3.13 support.
 numpy>=1.26
 tensorflow>=2.19
+
+# Optional: only needed to regenerate the BLIP-augmented captions file via
+# scripts/augment_captions.py. Install CPU-only torch from the PyTorch index:
+#   pip install --index-url https://download.pytorch.org/whl/cpu torch
+# Then:
+#   pip install transformers pillow
+# Listed loosely here so a fresh install picks compatible CPU wheels.
+# torch>=2.5
+# transformers>=4.45
+# pillow>=10
