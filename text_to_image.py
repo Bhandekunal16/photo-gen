@@ -5,11 +5,19 @@ os.environ.setdefault("TF_ENABLE_ONEDNN_OPTS", "0")
 
 import sys
 import time
+import random
 import numpy as np
 import tensorflow as tf
 from tensorflow.keras import layers
 from tensorflow.keras.preprocessing.text import Tokenizer
 from tensorflow.keras.preprocessing.sequence import pad_sequences
+
+# Reproducibility: fix the noise/init seeds across NumPy, Python and TF so two
+# runs starting from scratch with the same data give comparable images.
+SEED = 42
+random.seed(SEED)
+np.random.seed(SEED)
+tf.random.set_seed(SEED)
 
 # --- Configuration & Constants ---
 IMG_SIZE = 60
@@ -80,12 +88,32 @@ class ConditioningAugmentation(layers.Layer):
 
 # --- Helper Functions ---
 def _decode_image(path):
-    """Read + decode + resize + normalize a single image. Runs in graph mode."""
+    """Read + decode + resize + normalize a single image. Runs in graph mode.
+
+    Deliberately deterministic: this stage is cached, so any randomness here
+    would be frozen on the first epoch. Augmentation lives in `_augment_image`
+    and is mapped *after* the cache so it re-rolls every epoch.
+    """
     img = tf.io.read_file(path)
     img = tf.image.decode_jpeg(img, channels=CHANNELS)
     img = tf.image.resize(img, [IMG_SIZE, IMG_SIZE])
     img = (tf.cast(img, tf.float32) / 127.5) - 1.0
     return img
+
+
+def _augment_image(img, text):
+    """Per-epoch random augmentation. With ~1000 images this is essentially
+    free dataset diversity for the discriminator:
+      * horizontal flip: scenery/landmarks are flip-invariant.
+      * tiny brightness/contrast jitter: photometric variety without changing
+        semantic content. Bounds are conservative so the [-1, 1] range stays
+        meaningful and tanh outputs stay comparable.
+    """
+    img = tf.image.random_flip_left_right(img)
+    img = tf.image.random_brightness(img, max_delta=0.08)
+    img = tf.image.random_contrast(img, lower=0.9, upper=1.1)
+    img = tf.clip_by_value(img, -1.0, 1.0)
+    return img, text
 
 
 def load_image_caption_dataset(img_folder, caption_file):
@@ -123,6 +151,7 @@ def load_image_caption_dataset(img_folder, caption_file):
     return (
         dataset.cache()
         .shuffle(min(1000, len(image_paths)), reshuffle_each_iteration=True)
+        .map(_augment_image, num_parallel_calls=AUTOTUNE)
         .batch(BATCH_SIZE, drop_remainder=True)
         .prefetch(AUTOTUNE)
     )
@@ -172,16 +201,21 @@ def make_discriminator():
     x = layers.Conv2D(64, 4, strides=2, padding="same")(image_input)
     x = layers.LeakyReLU()(x)
 
+    # LayerNormalization (per-sample) instead of BatchNormalization (per-batch).
+    # WGAN-GP's gradient penalty assumes the discriminator function is
+    # independent across samples in a batch; BatchNorm violates that and is a
+    # known source of instability. LayerNorm preserves the per-sample property
+    # while still keeping activations bounded.
     x = layers.Conv2D(128, 4, strides=2, padding="same")(x)
-    x = layers.BatchNormalization()(x)
+    x = layers.LayerNormalization()(x)
     x = layers.LeakyReLU()(x)
 
     x = layers.Conv2D(256, 4, strides=2, padding="same")(x)
-    x = layers.BatchNormalization()(x)
+    x = layers.LayerNormalization()(x)
     x = layers.LeakyReLU()(x)
 
     x = layers.Conv2D(512, 4, strides=2, padding="same")(x)
-    x = layers.BatchNormalization()(x)
+    x = layers.LayerNormalization()(x)
     x = layers.LeakyReLU()(x)
 
     x = layers.Flatten()(x)
