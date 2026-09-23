@@ -31,6 +31,7 @@ VOCAB_SIZE = 5000
 EMBED_DIM = 256
 DISC_TEXT_DIM = 128
 N_CRITIC = 1
+GP_WEIGHT = 0.0  # Hinge GAN: keep 0.0. Set >0 only if explicitly enabling GP.
 EMA_DECAY = 0.995
 EMA_UPDATE_EVERY = 5
 MONITOR_GRID = 4
@@ -65,7 +66,23 @@ def configure_runtime():
 
 
 tokenizer = Tokenizer(num_words=VOCAB_SIZE, oov_token="<unk>")
-embedding_layer = tf.keras.layers.Embedding(input_dim=VOCAB_SIZE, output_dim=EMBED_DIM)
+
+
+def make_text_encoder():
+    text_input = tf.keras.Input(shape=(MAX_LEN,), dtype=tf.int32, name="token_ids")
+
+    x = layers.Embedding(
+        input_dim=VOCAB_SIZE + 1,
+        output_dim=EMBED_DIM,
+        mask_zero=True,
+        name="text_embedding",
+    )(text_input)
+
+    x = layers.LSTM(EMBED_DIM, name="text_lstm")(x)
+
+    x = layers.LayerNormalization(name="text_norm")(x)
+
+    return tf.keras.Model(text_input, x, name="text_encoder")
 
 
 class ConditioningAugmentation(layers.Layer):
@@ -78,7 +95,8 @@ class ConditioningAugmentation(layers.Layer):
     def call(self, inputs):
         mean = self.dense_mean(inputs)
         log_sigma = self.dense_log_sigma(inputs)
-        stddev = tf.exp(log_sigma)
+        log_sigma = tf.clip_by_value(log_sigma, -4.0, 4.0)
+        stddev = tf.exp(0.5 * log_sigma)
         epsilon = tf.random.normal(shape=tf.shape(mean))
         return mean + stddev * epsilon
 
@@ -106,25 +124,28 @@ def load_image_caption_dataset(img_folder, caption_file):
     with open(caption_file, "r") as f:
         for line in f:
             line = line.strip()
+
             if not line or "|" not in line:
                 continue
+
             img_name, caption = line.split("|", 1)
+
             image_paths.append(os.path.join(img_folder, img_name))
+
             captions.append(caption)
 
     sequences = tokenizer.texts_to_sequences(captions)
-    padded = pad_sequences(sequences, maxlen=MAX_LEN).astype(np.int32)
 
-    text_lstm = tf.keras.layers.LSTM(EMBED_DIM)
-    embedded = embedding_layer(tf.constant(padded))
-    text_features = text_lstm(embedded).numpy().astype(np.float32)
+    padded = pad_sequences(sequences, maxlen=MAX_LEN).astype(np.int32)
 
     image_ds = tf.data.Dataset.from_tensor_slices(image_paths).map(
         _decode_image, num_parallel_calls=AUTOTUNE
     )
-    text_ds = tf.data.Dataset.from_tensor_slices(text_features)
+
+    text_ds = tf.data.Dataset.from_tensor_slices(padded)
 
     dataset = tf.data.Dataset.zip((image_ds, text_ds))
+
     return (
         dataset.cache()
         .shuffle(min(1000, len(image_paths)), reshuffle_each_iteration=True)
@@ -174,34 +195,99 @@ def make_generator():
 
 
 def make_discriminator():
-    image_input = tf.keras.Input(shape=(60, 60, 3))
-    text_input = tf.keras.Input(shape=(EMBED_DIM,))
+    image_input = tf.keras.Input(
+        shape=(IMG_SIZE, IMG_SIZE, CHANNELS),
+        name="image_input",
+    )
 
-    x = layers.Conv2D(32, 4, strides=2, padding="same")(image_input)
-    x = layers.LeakyReLU()(x)
+    text_input = tf.keras.Input(
+        shape=(EMBED_DIM,),
+        name="text_input",
+    )
 
-    x = layers.Conv2D(64, 4, strides=2, padding="same")(x)
+    # -------------------------
+    # Image encoder
+    # -------------------------
+    x = layers.Conv2D(
+        32,
+        4,
+        strides=2,
+        padding="same",
+    )(image_input)
+    x = layers.LeakyReLU(0.2)(x)
+
+    x = layers.Conv2D(
+        64,
+        4,
+        strides=2,
+        padding="same",
+    )(x)
     x = layers.LayerNormalization()(x)
-    x = layers.LeakyReLU()(x)
+    x = layers.LeakyReLU(0.2)(x)
 
-    x = layers.Conv2D(128, 4, strides=2, padding="same")(x)
+    x = layers.Conv2D(
+        128,
+        4,
+        strides=2,
+        padding="same",
+    )(x)
     x = layers.LayerNormalization()(x)
-    x = layers.LeakyReLU()(x)
+    x = layers.LeakyReLU(0.2)(x)
 
-    x = layers.Conv2D(256, 4, strides=2, padding="same")(x)
+    x = layers.Conv2D(
+        256,
+        4,
+        strides=2,
+        padding="same",
+    )(x)
     x = layers.LayerNormalization()(x)
-    x = layers.LeakyReLU()(x)
+    x = layers.LeakyReLU(0.2)(x)
 
-    x = layers.Flatten()(x)
+    x = layers.GlobalAveragePooling2D()(x)
 
-    text_proj = layers.Dense(DISC_TEXT_DIM, activation="relu")(text_input)
-    ca_text = ConditioningAugmentation(DISC_TEXT_DIM)(text_proj)
+    # -------------------------
+    # Image projection
+    # -------------------------
+    image_features = layers.Dense(
+        EMBED_DIM,
+        name="image_projection",
+    )(x)
 
-    x = layers.Concatenate()([x, ca_text])
-    x = layers.Dense(256, activation="relu")(x)
-    x = layers.Dense(1)(x)
+    # -------------------------
+    # Text projection
+    # -------------------------
+    text_features = layers.Dense(
+        EMBED_DIM,
+        name="text_projection",
+    )(text_input)
 
-    return tf.keras.Model([image_input, text_input], x)
+    # -------------------------
+    # Image/text compatibility
+    # -------------------------
+    compatibility = layers.Dot(
+        axes=1,
+        normalize=True,
+        name="image_text_compatibility",
+    )([image_features, text_features])
+
+    # -------------------------
+    # Unconditional realism
+    # -------------------------
+    realness = layers.Dense(
+        1,
+        name="realness",
+    )(x)
+
+    # Both outputs are shape (batch, 1)
+    output = layers.Add(
+        name="conditional_score",
+    )([realness, compatibility])
+
+    return tf.keras.Model(
+        [image_input, text_input],
+        output,
+        name="conditional_discriminator",
+    )
 
 
 def generator_loss(fake_output):
@@ -214,52 +300,137 @@ def discriminator_loss(real_output, fake_output):
     )
 
 
-def gradient_penalty(discriminator, real_images, fake_images, text_embeddings):
-    batch_size = tf.shape(real_images)[0]
-    alpha = tf.random.uniform([batch_size, 1, 1, 1], 0.0, 1.0)
-    interpolated_images = alpha * real_images + (1 - alpha) * fake_images
-    with tf.GradientTape() as tape:
-        tape.watch(interpolated_images)
-        interpolated_output = discriminator(
-            [interpolated_images, text_embeddings], training=True
-        )
-    grads = tape.gradient(interpolated_output, [interpolated_images])[0]
-    grads_sq = tf.reduce_sum(tf.square(grads), axis=[1, 2, 3])
-    grad_norm = tf.sqrt(grads_sq + 1e-12)
-    penalty = tf.reduce_mean((grad_norm - 1.0) ** 2)
-    return penalty * 10
-
-
 @tf.function(reduce_retracing=True)
-def disc_step(images, captions, generator, discriminator, disc_opt):
+def disc_step(
+    images,
+    caption_tokens,
+    text_encoder,
+    generator,
+    discriminator,
+    disc_opt,
+):
     batch_size = tf.shape(images)[0]
-    noise = tf.random.normal([batch_size, NOISE_DIM])
-    fake_images = generator([noise, captions], training=True)
 
     with tf.GradientTape() as tape:
-        real_output = discriminator([images, captions], training=True)
-        fake_output = discriminator([fake_images, captions], training=True)
-        d_loss = discriminator_loss(real_output, fake_output)
+        text_features = text_encoder(
+            caption_tokens,
+            training=True,
+        )
 
-    grads = tape.gradient(d_loss, discriminator.trainable_variables)
-    disc_opt.apply_gradients(zip(grads, discriminator.trainable_variables))
+        noise = tf.random.normal([batch_size, NOISE_DIM])
+
+        fake_images = generator(
+            [noise, text_features],
+            training=True,
+        )
+
+        # Stop generator gradients during discriminator update.
+        fake_images_for_d = tf.stop_gradient(fake_images)
+
+        real_output = discriminator(
+            [images, text_features],
+            training=True,
+        )
+
+        fake_output = discriminator(
+            [fake_images_for_d, text_features],
+            training=True,
+        )
+
+        # Real image + wrong caption is another negative example.
+        mismatched_tokens = make_mismatched_captions(caption_tokens)
+
+        mismatched_features = text_encoder(
+            mismatched_tokens,
+            training=True,
+        )
+
+        mismatch_output = discriminator(
+            [images, mismatched_features],
+            training=True,
+        )
+
+        d_loss = discriminator_loss(
+            real_output,
+            fake_output,
+        )
+
+        mismatch_loss = tf.reduce_mean(tf.nn.relu(1.0 + mismatch_output))
+
+        d_loss = d_loss + 0.5 * mismatch_loss
+
+    # The text encoder is intentionally updated from the discriminator
+    # objective as well as the generator objective.
+    trainable_vars = (
+        discriminator.trainable_variables + text_encoder.trainable_variables
+    )
+
+    grads = tape.gradient(
+        d_loss,
+        trainable_vars,
+    )
+
+    disc_opt.apply_gradients(zip(grads, trainable_vars))
+
     return d_loss
 
 
 @tf.function(reduce_retracing=True)
-def gen_step(captions, generator, discriminator, gen_opt):
-    """One generator update."""
-    batch_size = tf.shape(captions)[0]
-    noise = tf.random.normal([batch_size, NOISE_DIM])
+def gen_step(
+    caption_tokens,
+    text_encoder,
+    generator,
+    discriminator,
+    gen_opt,
+):
+    batch_size = tf.shape(caption_tokens)[0]
 
     with tf.GradientTape() as tape:
-        fake_images = generator([noise, captions], training=True)
-        fake_output = discriminator([fake_images, captions], training=True)
-        g_loss = generator_loss(fake_output)
+        text_features = text_encoder(
+            caption_tokens,
+            training=True,
+        )
 
-    grads = tape.gradient(g_loss, generator.trainable_variables)
-    gen_opt.apply_gradients(zip(grads, generator.trainable_variables))
+        noise = tf.random.normal([batch_size, NOISE_DIM])
+
+        fake_images = generator(
+            [noise, text_features],
+            training=True,
+        )
+
+        fake_output = discriminator(
+            [fake_images, text_features],
+            training=True,
+        )
+
+        g_loss = generator_loss(
+            fake_output,
+        )
+
+    trainable_vars = generator.trainable_variables + text_encoder.trainable_variables
+
+    grads = tape.gradient(
+        g_loss,
+        trainable_vars,
+    )
+
+    gen_opt.apply_gradients(zip(grads, trainable_vars))
+
     return g_loss
+
+
+def make_mismatched_captions(caption_tokens):
+    """Create negative text/image pairs by rotating captions within a batch."""
+    batch_size = tf.shape(caption_tokens)[0]
+
+    def rotate():
+        return tf.roll(caption_tokens, shift=1, axis=0)
+
+    return tf.cond(
+        tf.greater(batch_size, 1),
+        rotate,
+        lambda: caption_tokens,
+    )
 
 
 def build_ema_generator(generator):
@@ -271,6 +442,11 @@ def build_ema_generator(generator):
 
 @tf.function
 def update_ema(model, ema_model, decay):
+    tf.debugging.assert_equal(
+        len(model.weights),
+        len(ema_model.weights),
+    )
+
     for v_ema, v in zip(ema_model.weights, model.weights):
         v_ema.assign(decay * v_ema + (1.0 - decay) * v)
 
@@ -316,15 +492,34 @@ def main():
 
     tokenizer.fit_on_texts(all_captions)
     payload = load_image_caption_dataset("./data/image60px", captions_path)
+    text_encoder = make_text_encoder()
     discriminator = make_discriminator()
     generator = make_generator()
     g_ema = build_ema_generator(generator)
-    gen_opt = tf.keras.optimizers.Adam(3e-4, beta_1=0.5, beta_2=0.999)
-    disc_opt = tf.keras.optimizers.Adam(2.5e-5, beta_1=0.5, beta_2=0.9)
+
+    print(f"Text encoder parameters: {text_encoder.count_params():,}")
+    print(f"Generator parameters: {generator.count_params():,}")
+    print(f"Discriminator parameters: {discriminator.count_params():,}")
+
+    gen_opt = tf.keras.optimizers.Adam(
+        learning_rate=2e-4,
+        beta_1=0.5,
+        beta_2=0.999,
+    )
+
+    disc_opt = tf.keras.optimizers.Adam(
+        learning_rate=2e-4,
+        beta_1=0.5,
+        beta_2=0.999,
+    )
 
     checkpoint_dir = "./checkpoints"
-    checkpoint_prefix = os.path.join(checkpoint_dir, "ckpt_60px")
+    checkpoint_prefix = os.path.join(
+        checkpoint_dir,
+        "ckpt_60px_conditional_v2",
+    )
     checkpoint = tf.train.Checkpoint(
+        text_encoder=text_encoder,
         generator=generator,
         discriminator=discriminator,
         g_ema=g_ema,
@@ -334,11 +529,17 @@ def main():
 
     latest_ckpt = tf.train.latest_checkpoint(checkpoint_dir)
     if latest_ckpt:
-        checkpoint.restore(latest_ckpt).expect_partial()
-        print(f"Restored from checkpoint: {latest_ckpt}")
+        try:
+            status = checkpoint.restore(latest_ckpt)
+            status.expect_partial()
+            print(f"Restored from checkpoint: {latest_ckpt}")
+            print("Checkpoint contains the current text encoder trackable.")
+        except Exception as exc:
+            print(f"Checkpoint restore failed: {exc}")
+            print("Starting from scratch with the current architecture.")
 
-        gen_opt.learning_rate.assign(3e-4)
-        disc_opt.learning_rate.assign(2.5e-5)
+        gen_opt.learning_rate.assign(2e-4)
+        disc_opt.learning_rate.assign(2e-4)
         print(
             f"Forced LR override: gen={float(gen_opt.learning_rate):.1e}, "
             f"disc={float(disc_opt.learning_rate):.1e}"
@@ -350,7 +551,8 @@ def main():
     seq = tokenizer.texts_to_sequences(["a body of water"] * MONITOR_GRID)
     padded = pad_sequences(seq, maxlen=MAX_LEN).astype(np.int32)
 
-    monitor_text = tf.reduce_mean(embedding_layer(tf.constant(padded)), axis=1)
+    monitor_tokens = tf.constant(padded, dtype=tf.int32)
+    monitor_text = text_encoder(monitor_tokens, training=False)
 
     g_loss_metric = tf.keras.metrics.Mean()
     d_loss_metric = tf.keras.metrics.Mean()
@@ -362,12 +564,23 @@ def main():
 
         for step_idx, (image_batch, caption_batch) in enumerate(payload):
             d_loss = disc_step(
-                image_batch, caption_batch, generator, discriminator, disc_opt
+                image_batch,
+                caption_batch,
+                text_encoder,
+                generator,
+                discriminator,
+                disc_opt,
             )
             d_loss_metric.update_state(d_loss)
 
             if step_idx % N_CRITIC == 0:
-                g_loss = gen_step(caption_batch, generator, discriminator, gen_opt)
+                g_loss = gen_step(
+                    caption_batch,
+                    text_encoder,
+                    generator,
+                    discriminator,
+                    gen_opt,
+                )
                 g_loss_metric.update_state(g_loss)
                 if step_idx % EMA_UPDATE_EVERY == 0:
                     update_ema(generator, g_ema, EMA_DECAY)
@@ -389,9 +602,8 @@ def main():
             f"Epoch {epoch+1}/{EPOCHS}  Gen {g_avg:.4f}  Disc {d_avg:.4f}  ({elapsed:.1f}s)"
         )
 
-        if g_avg <= 0.8 and d_avg <= 0.8:
-            save_generated_samples(epoch, "perfect", g_ema, monitor_noise, monitor_text)
-
+        # GAN losses are not a reliable image-quality metric.
+        # Save regular samples instead; use FID/KID/CLIP externally for quality evaluation.
         if (epoch + 1) % 10 == 0 or epoch == EPOCHS - 1:
             save_generated_samples(epoch, "normal", g_ema, monitor_noise, monitor_text)
 
@@ -401,6 +613,12 @@ def main():
     generator.save("generator_model_60px.keras")
     g_ema.save("generator_ema_model_60px.keras")
     discriminator.save("discriminator_model_60px.keras")
+    text_encoder.save("text_encoder_60px.keras")
+
+    # Persist tokenizer vocabulary/config needed for inference.
+    tokenizer_config = tokenizer.to_json()
+    with open("tokenizer_60px.json", "w", encoding="utf-8") as f:
+        f.write(tokenizer_config)
 
 
 if __name__ == "__main__":
