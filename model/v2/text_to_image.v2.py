@@ -40,6 +40,14 @@ EMA_UPDATE_EVERY = 5
 MONITOR_GRID = 9
 LOG_EVERY_STEPS = 20
 
+MODEL_DIR = "./model/v2"
+
+
+GENERATOR_PATH = f"{MODEL_DIR}/generator_model_60px_finetuned.keras"
+EMA_GENERATOR_PATH = f"{MODEL_DIR}/generator_ema_model_60px_finetuned.keras"
+TEXT_ENCODER_PATH = f"{MODEL_DIR}/text_encoder_60px_finetuned.keras"
+DISCRIMINATOR_PATH = f"{MODEL_DIR}/discriminator_model_60px_finetuned.keras"
+
 MONITOR_CAPTIONS = [
     "a body of water",
     "a mountain landscape",
@@ -409,7 +417,12 @@ def main():
     payload = load_image_caption_dataset("./data/image60px", captions_path)
     text_encoder = make_text_encoder()
     discriminator = make_discriminator()
-    generator = make_generator()
+
+    generator = tf.keras.models.load_model(
+        EMA_GENERATOR_PATH,
+        custom_objects={"ConditioningAugmentation": ConditioningAugmentation},
+    )
+
     g_ema = build_ema_generator(generator)
 
     print(f"Text encoder parameters: {text_encoder.count_params():,}")
