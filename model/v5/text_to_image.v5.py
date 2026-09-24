@@ -67,47 +67,25 @@ V4_MODEL_DIR = "./model/v4"
 V5_MODEL_DIR = "./model/v5"
 V5_CHECKPOINT_DIR = os.path.join(V5_MODEL_DIR, "checkpoints")
 
-V2_GENERATOR_PATH = os.path.join(
-    V2_MODEL_DIR, "generator_model_60px_finetuned.keras"
-)
+V2_GENERATOR_PATH = os.path.join(V2_MODEL_DIR, "generator_model_60px_finetuned.keras")
 V2_EMA_GENERATOR_PATH = os.path.join(
     V2_MODEL_DIR, "generator_ema_model_60px_finetuned.keras"
 )
-V2_TEXT_ENCODER_PATH = os.path.join(
-    V2_MODEL_DIR, "text_encoder_60px_finetuned.keras"
-)
+V2_TEXT_ENCODER_PATH = os.path.join(V2_MODEL_DIR, "text_encoder_60px_finetuned.keras")
 V2_DISCRIMINATOR_PATH = os.path.join(
     V2_MODEL_DIR, "discriminator_model_60px_finetuned.keras"
 )
-V2_TOKENIZER_PATH = os.path.join(
-    V2_MODEL_DIR, "tokenizer_60px_finetuned.json"
-)
+V2_TOKENIZER_PATH = os.path.join(V2_MODEL_DIR, "tokenizer_60px_finetuned.json")
 
-V4_GENERATOR_PATH = os.path.join(
-    V4_MODEL_DIR, "generator_model_60px_v4.keras"
-)
-V4_EMA_GENERATOR_PATH = os.path.join(
-    V4_MODEL_DIR, "generator_ema_model_60px_v4.keras"
-)
-V4_TEXT_ENCODER_PATH = os.path.join(
-    V4_MODEL_DIR, "text_encoder_60px_v4.keras"
-)
-V4_DISCRIMINATOR_PATH = os.path.join(
-    V4_MODEL_DIR, "discriminator_model_60px_v4.keras"
-)
+V4_GENERATOR_PATH = os.path.join(V4_MODEL_DIR, "generator_model_60px_v4.keras")
+V4_EMA_GENERATOR_PATH = os.path.join(V4_MODEL_DIR, "generator_ema_model_60px_v4.keras")
+V4_TEXT_ENCODER_PATH = os.path.join(V4_MODEL_DIR, "text_encoder_60px_v4.keras")
+V4_DISCRIMINATOR_PATH = os.path.join(V4_MODEL_DIR, "discriminator_model_60px_v4.keras")
 
-V5_GENERATOR_PATH = os.path.join(
-    V5_MODEL_DIR, "generator_model_60px_v5.keras"
-)
-V5_EMA_GENERATOR_PATH = os.path.join(
-    V5_MODEL_DIR, "generator_ema_model_60px_v5.keras"
-)
-V5_TEXT_ENCODER_PATH = os.path.join(
-    V5_MODEL_DIR, "text_encoder_60px_v5.keras"
-)
-V5_DISCRIMINATOR_PATH = os.path.join(
-    V5_MODEL_DIR, "discriminator_model_60px_v5.keras"
-)
+V5_GENERATOR_PATH = os.path.join(V5_MODEL_DIR, "generator_model_60px_v5.keras")
+V5_EMA_GENERATOR_PATH = os.path.join(V5_MODEL_DIR, "generator_ema_model_60px_v5.keras")
+V5_TEXT_ENCODER_PATH = os.path.join(V5_MODEL_DIR, "text_encoder_60px_v5.keras")
+V5_DISCRIMINATOR_PATH = os.path.join(V5_MODEL_DIR, "discriminator_model_60px_v5.keras")
 
 MONITOR_CAPTIONS = [
     "a body of water",
@@ -345,9 +323,7 @@ def contrastive_alignment_loss(image_features, text_features):
     labels = tf.range(tf.shape(logits)[0])
 
     image_to_text = tf.reduce_mean(
-        tf.nn.sparse_softmax_cross_entropy_with_logits(
-            labels=labels, logits=logits
-        )
+        tf.nn.sparse_softmax_cross_entropy_with_logits(labels=labels, logits=logits)
     )
     text_to_image = tf.reduce_mean(
         tf.nn.sparse_softmax_cross_entropy_with_logits(
@@ -386,7 +362,9 @@ def disc_step(
         mismatch_loss = tf.reduce_mean(tf.nn.relu(1.0 + mismatch_output))
         d_loss = d_loss + MISMATCH_LOSS_WEIGHT * mismatch_loss
 
-    trainable_vars = discriminator.trainable_variables + text_encoder.trainable_variables
+    trainable_vars = (
+        discriminator.trainable_variables + text_encoder.trainable_variables
+    )
     grads = tape.gradient(d_loss, trainable_vars)
     disc_opt.apply_gradients(zip(grads, trainable_vars))
 
@@ -469,7 +447,9 @@ def update_ema(model, ema_model, decay):
         v_ema.assign(decay * v_ema + (1.0 - decay) * v)
 
 
-def save_generated_samples(epoch_number, folder_type, generator, monitor_noise, monitor_text):
+def save_generated_samples(
+    epoch_number, folder_type, generator, monitor_noise, monitor_text
+):
     images = generator([monitor_noise, monitor_text], training=False)
     images = tf.clip_by_value((images + 1.0) / 2.0, 0.0, 1.0)
 
@@ -507,9 +487,7 @@ def main():
     print(f"Using captions file: {captions_path}")
 
     if not os.path.isfile(V2_TOKENIZER_PATH):
-        raise FileNotFoundError(
-            f"V2 tokenizer not found: {V2_TOKENIZER_PATH}"
-        )
+        raise FileNotFoundError(f"V2 tokenizer not found: {V2_TOKENIZER_PATH}")
 
     # IMPORTANT: use the exact V2 tokenizer mapping. Do not refit it.
     with open(V2_TOKENIZER_PATH, "r", encoding="utf-8") as f:
@@ -528,8 +506,7 @@ def main():
     missing = [path for path in required if not os.path.isfile(path)]
     if missing:
         raise FileNotFoundError(
-            "Missing V2 model files:\n" +
-            "\n".join(f"  - {path}" for path in missing)
+            "Missing V2 model files:\n" + "\n".join(f"  - {path}" for path in missing)
         )
 
     print("Loading V4 epoch-650 models...")
