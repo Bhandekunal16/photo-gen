@@ -1052,3 +1052,516 @@ Current objective:
 ``` text
 Improve caption → image semantic control
 ```
+
+------------------------------------------------------------------------
+
+# 29. V7 --- FiLM Multi-Stage Text Conditioning
+
+V7 was the next architectural experiment after V6.
+
+The goal was to replace the additive multi-stage text conditioning with
+**FiLM (Feature-wise Linear Modulation)**.
+
+Instead of:
+
+``` text
+feature map + text bias
+```
+
+V7 uses:
+
+``` text
+feature map × text-dependent scale
+             +
+             text-dependent shift
+```
+
+FiLM conditioning was applied at:
+
+``` text
+5×5
+10×10
+20×20
+40×40
+60×60
+```
+
+The FiLM layers were identity-initialized:
+
+``` text
+gamma = 1
+beta  = 0
+```
+
+so the V7 generator initially remained close to the V6 generator.
+
+------------------------------------------------------------------------
+
+# 30. V7 Initialization
+
+V7 successfully loaded the V6 models.
+
+The learned V6 generator contained:
+
+``` text
+12 compatible layers
+```
+
+that were transferred into V7.
+
+V7 added:
+
+``` text
+5 FiLM conditioning layers
+```
+
+which were identity-initialized.
+
+Therefore the experiment was:
+
+``` text
+V6 learned generator
+        +
+5 new FiLM conditioning stages
+        ↓
+V7
+```
+
+rather than a complete restart.
+
+------------------------------------------------------------------------
+
+# 31. V7 Training
+
+V7 trained from:
+
+``` text
+Epoch 801
+```
+
+through:
+
+``` text
+Epoch 950
+```
+
+Configuration:
+
+``` text
+Generator LR      = 2e-4
+Discriminator LR  = 1e-4
+Mismatch weight   = 0.75
+EMA decay         = 0.995
+```
+
+The training remained numerically stable.
+
+The final epoch was:
+
+``` text
+Epoch 950
+Gen  = 1.3739
+Disc = 1.1317
+```
+
+The loss values did not show an obvious GAN collapse.
+
+------------------------------------------------------------------------
+
+# 32. V7 Visual Evaluation
+
+The generated images were inspected at:
+
+``` text
+810
+820
+830
+840
+850
+860
+870
+880
+890
+900
+910
+920
+930
+940
+950
+```
+
+The visual progression showed an important pattern.
+
+## Epoch 810--830
+
+The images still contained:
+
+-   sky/ground separation
+-   landscape-like structure
+-   multiple colors
+-   visible spatial variation
+-   some useful coarse image structure
+
+Epoch 810 was one of the strongest V7 visual checkpoints.
+
+------------------------------------------------------------------------
+
+## Epoch 840--880
+
+Image structure began to degrade.
+
+The outputs became increasingly:
+
+-   blurry
+-   abstract
+-   dominated by large color regions
+-   less spatially detailed
+
+The model continued training without an obvious loss explosion, but the
+images were getting worse.
+
+------------------------------------------------------------------------
+
+## Epoch 900--950
+
+The degradation became much more obvious.
+
+The generated images contained:
+
+-   broad soft regions
+-   reduced spatial detail
+-   less recognizable structure
+-   increasingly abstract compositions
+
+Therefore the final epoch was **not automatically the best V7 model**.
+
+------------------------------------------------------------------------
+
+# 33. V7 Important Finding
+
+V7 demonstrated an important distinction:
+
+``` text
+Training loss stability
+        ≠
+Image quality
+```
+
+The losses remained relatively stable through epoch 950, while the
+visual outputs progressively lost useful spatial detail.
+
+Therefore:
+
+> GAN generator/discriminator losses must not be used as the sole
+> model-selection criterion.
+
+Fixed-noise generated images remain an important evaluation tool.
+
+------------------------------------------------------------------------
+
+# 34. V7 Conclusion
+
+V7 did not provide sufficient evidence that FiLM multi-stage
+conditioning improved the final text-to-image result.
+
+The experiment showed:
+
+``` text
+FiLM conditioning
+        ↓
+caption influence remains present
+        ↓
+but image structure progressively degrades
+```
+
+The visual degradation means V7 should **not automatically become the
+new baseline**.
+
+The more useful V7 checkpoints to preserve are approximately:
+
+``` text
+V7 epoch 810
+V7 epoch 820
+V7 epoch 830
+```
+
+rather than assuming epoch 950 is best.
+
+------------------------------------------------------------------------
+
+# 35. Current Version Assessment
+
+The project history is now:
+
+``` text
+V1
+ ↓
+initial conditional GAN
+ ↓
+V2
+ ↓
+stable conditional GAN + trainable text encoder
+ ↓
+V2 epoch 500 baseline
+ ↓
+V3
+ ↓
+caption-conditioning evaluation
+ ↓
+V4
+ ↓
+stronger wrong-caption discrimination
+ ↓
+V5
+ ↓
+explicit image/text alignment loss
+ ↓
+V6
+ ↓
+multi-stage additive text conditioning
+ ↓
+V7
+ ↓
+FiLM multi-stage text conditioning
+```
+
+The main observed limitation remains:
+
+``` text
+generic landscape generation
+```
+
+rather than strong rendering of specific semantic concepts such as:
+
+``` text
+city skyline
+road through mountains
+forest with trees
+beach with waves
+lake with mountains
+```
+
+------------------------------------------------------------------------
+
+# 36. New V8 Direction --- Dataset and Caption Quality
+
+After V7, the next experiment should **not automatically add another
+generator-conditioning mechanism**.
+
+The evidence now points toward the training data and caption supervision
+as major bottlenecks.
+
+Current constraints include approximately:
+
+``` text
+~1,000 images
+60×60 resolution
+automatically generated BLIP captions
+```
+
+This makes it difficult for the GAN to learn precise object/scene
+semantics.
+
+The next step should therefore be a **dataset-first experiment**.
+
+------------------------------------------------------------------------
+
+# 37. V8 Step 1 --- Analyze Captions
+
+Before training V8, inspect:
+
+``` text
+data/captions.txt
+```
+
+Analyze:
+
+-   duplicate captions
+-   overly generic captions
+-   contradictory descriptions
+-   very short captions
+-   repeated concepts
+-   useful scene/object vocabulary
+-   frequency of important concepts
+
+The goal is to determine whether the caption supervision is strong
+enough for conditional generation.
+
+------------------------------------------------------------------------
+
+# 38. V8 Step 2 --- Improve Caption Quality
+
+Instead of relying blindly on the raw BLIP output, construct a cleaner
+and more consistent caption dataset.
+
+Example target descriptions:
+
+``` text
+a mountain landscape with trees
+a road through a mountain valley
+a forest with dense green trees
+a beach with ocean waves
+a city skyline under a cloudy sky
+```
+
+The objective is to make the caption-image relationship clearer and more
+consistent.
+
+------------------------------------------------------------------------
+
+# 39. V8 Step 3 --- Re-evaluate Resolution
+
+After improving the captions, evaluate whether the image resolution is
+limiting semantic learning.
+
+Current:
+
+``` text
+60×60
+```
+
+Potential future experiments:
+
+``` text
+80×80
+96×96
+128×128
+```
+
+However, resolution should not be increased blindly on the CPU system.
+
+Higher resolution increases:
+
+-   computation
+-   memory usage
+-   training time
+-   model complexity
+
+The dataset and caption quality should be improved first.
+
+------------------------------------------------------------------------
+
+# 40. Model Preservation Strategy
+
+Keep previous versions as experimental baselines.
+
+Recommended preserved checkpoints:
+
+``` text
+V2 epoch 500
+V4 epoch 650
+V5 approximately epoch 750
+V6 best/final checkpoint
+V7 epoch 810
+V7 epoch 820
+V7 epoch 830
+V7 epoch 950
+```
+
+Do not delete old checkpoints until the newer experiment has been
+validated.
+
+------------------------------------------------------------------------
+
+# 41. Current Development Decision
+
+The next development phase is:
+
+``` text
+V7 result
+   ↓
+stop architectural changes temporarily
+   ↓
+inspect captions.txt
+   ↓
+measure caption quality
+   ↓
+clean/improve captions
+   ↓
+rebuild training dataset
+   ↓
+V8 training experiment
+```
+
+The primary V8 objective is:
+
+> Improve the quality of the image-caption supervision before
+> introducing another major GAN architecture change.
+
+------------------------------------------------------------------------
+
+# 42. Current Evaluation Principle
+
+For every future version, evaluate three separate properties:
+
+### A. Training stability
+
+``` text
+Generator loss
+Discriminator loss
+No obvious collapse
+```
+
+### B. Visual quality
+
+``` text
+sharpness
+structure
+color
+coherence
+diversity
+```
+
+### C. Semantic conditioning
+
+``` text
+caption
+   ↓
+specific generated scene/object
+```
+
+The third property is the most important for the project's actual goal.
+
+A model should not be considered better simply because:
+
+``` text
+loss decreased
+```
+
+or:
+
+``` text
+image became sharper
+```
+
+It should demonstrate stronger:
+
+``` text
+caption → semantic image
+```
+
+alignment.
+
+------------------------------------------------------------------------
+
+# 43. Current Status
+
+``` text
+Current completed version: V7
+
+Best V7 visual region:
+approximately epochs 810–830
+
+Current major bottleneck:
+caption/data supervision + limited dataset/resolution
+
+Next planned version:
+V8
+
+V8 focus:
+dataset and caption quality
+```
+
+The project should now move from repeated architecture experiments
+toward improving the **quality and consistency of the training
+supervision**.
