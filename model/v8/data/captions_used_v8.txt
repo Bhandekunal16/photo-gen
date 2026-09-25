@@ -111,7 +111,6 @@ image_197.jpg|a living room with a couch and a television
 image_198.jpg|the sky is blue and white with clouds in it
 image_199.jpg|a person standing on top of a mountain
 image_2.jpg|the water is green and white in color
-image_20.jpg|thumb
 image_200.jpg|the sun is setting over the mountains and trees
 image_201.jpg|an airplane is flying in the sky over a city
 image_202.jpg|a group of people sitting on the floor in a room
@@ -326,7 +325,6 @@ image_390.jpg|a map of the world
 image_391.jpg|a room with several tables and chairs in it
 image_392.jpg|a woman riding on the back of a black horse
 image_393.jpg|a beach with waves crashing on the shore
-image_394.jpg|aurora 
 image_395.jpg|a group of birds flying in the sky
 image_396.jpg|a painting of a cemetery in the woods
 image_397.jpg|a view of the city from the top of a hill
@@ -360,7 +358,7 @@ image_420.jpg|a river in the middle of a forest
 image_421.jpg|the view from the top of the empire building
 image_422.jpg|a person walking down a street in the middle of a city
 image_423.jpg|the sky is blue and white with clouds in it
-image_424.jpg|an aurora 
+image_424.jpg|an aurora
 image_425.jpg|an airplane is flying in the sky over a city
 image_426.jpg|a small table with a glass top and metal legs
 image_427.jpg|a large body of water with trees in the background
@@ -392,7 +390,6 @@ image_45.jpg|a lake in the middle of a forest at sunset
 image_450.jpg|a herd of sheep grazing in a field with mountains in the background
 image_451.jpg|a view of the city from the top of a mountain
 image_452.jpg|a large cloud is in the sky above a forest
-image_453.jpg|thumb 
 image_454.jpg|a view of the mountains from the top of a mountain
 image_455.jpg|a view of the mountains from the top of a hill
 image_456.jpg|a black and white photo of a person in a dark room
@@ -635,7 +632,6 @@ image_669.jpg|the boardwalk at the beach in ocean city, nj
 image_67.jpg|a black and white photo of a tree in the fog
 image_670.jpg|a large white building with a blue sky in the background
 image_671.jpg|the view from the top of the mountain
-image_672.jpg|aurora
 image_673.jpg|a city skyline with tall buildings in the background
 image_674.jpg|a group of people standing on top of a grass covered field
 image_675.jpg|a painting of a man in a boat on the water
